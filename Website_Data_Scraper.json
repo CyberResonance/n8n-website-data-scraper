@@ -1,0 +1,221 @@
+{
+  "name": "Website Data Scraper",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "a1b2c3d4-0001-4000-8000-000000000001",
+      "name": "When clicking 'Test workflow'",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -600,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "scrape-website",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0002-4000-8000-000000000002",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -600,
+        340
+      ],
+      "webhookId": "web-scraper-webhook-01"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalizes input URL and configuration options from Webhook or Manual Trigger\nconst firstItem = $input.first()?.json || {};\nconst body = firstItem.body || firstItem.query || firstItem;\n\n// Default demo website if tested manually\nlet targetUrl = String(body.url || body.targetUrl || body.link || 'https://en.wikipedia.org/wiki/Web_scraping').trim();\n\nif (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://')) {\n  targetUrl = 'https://' + targetUrl;\n}\n\n// Note: the n8n Code-node sandbox has no global URL class, so parse with a regex.\nconst um = targetUrl.match(/^(https?:\\/\\/)([^\\/?#]+)([^?#]*)/i);\nif (!um) {\n  throw new Error(`Invalid URL provided: \"${targetUrl}\"`);\n}\nconst parsed = {\n  origin: um[1].toLowerCase() + um[2].toLowerCase(),\n  hostname: um[2].toLowerCase().replace(/:\\d+$/, ''),\n  pathname: um[3] || '/'\n};\n\nreturn [{\n  json: {\n    url: targetUrl,\n    origin: parsed.origin,\n    hostname: parsed.hostname,\n    pathname: parsed.pathname,\n    customSelector: body.selector || null,\n    includeImages: body.includeImages !== false,\n    includeLinks: body.includeLinks !== false,\n    requestedAt: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "a1b2c3d4-0003-4000-8000-000000000003",
+      "name": "Parse Input & Configure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -340,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            },
+            {
+              "name": "Accept",
+              "value": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+            },
+            {
+              "name": "Accept-Language",
+              "value": "en-US,en;q=0.9"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          },
+          "timeout": 15000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": true,
+              "maxRedirects": 5
+            }
+          }
+        }
+      },
+      "id": "a1b2c3d4-0004-4000-8000-000000000004",
+      "name": "Fetch Website HTML",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -100,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Robust, pure-JS HTML parser and structured content extractor\nconst httpItem = $input.first()?.json || {};\nconst config = $('Parse Input & Configure').first()?.json || {};\n\nconst rawHtml = typeof httpItem.data === 'string' ? httpItem.data : (typeof httpItem === 'string' ? httpItem : (httpItem.body || ''));\nconst statusCode = httpItem.statusCode || (httpItem.error ? 500 : 200);\n\nif (!rawHtml || httpItem.error) {\n  return [{\n    json: {\n      success: false,\n      url: config.url,\n      statusCode: statusCode,\n      error: httpItem.error || 'Empty HTML response or connection failure',\n      scrapedAt: new Date().toISOString()\n    }\n  }];\n}\n\n// 1. Extract Page Title\nconst titleMatch = rawHtml.match(/<title[^>]*>([\\s\\S]*?)<\\/title>/i);\nconst title = titleMatch ? titleMatch[1].replace(/\\s+/g, ' ').trim() : '';\n\n// 2. Extract Meta tags\nconst metaTags = {};\nconst ogTags = {};\nconst twitterTags = {};\n\nconst metaRegex = /<meta\\s+([^>]+)>/gi;\nlet metaMatch;\nwhile ((metaMatch = metaRegex.exec(rawHtml)) !== null) {\n  const attrs = metaMatch[1];\n  const nameMatch = attrs.match(/name=[\"']([^\"']+)[\"']/i);\n  const propMatch = attrs.match(/property=[\"']([^\"']+)[\"']/i);\n  const contentMatch = attrs.match(/content=[\"']([\\s\\S]*?)[\"']/i);\n\n  const name = (nameMatch ? nameMatch[1] : '').toLowerCase();\n  const prop = (propMatch ? propMatch[1] : '').toLowerCase();\n  const content = contentMatch ? contentMatch[1].trim() : '';\n\n  if (name) {\n    if (name.startsWith('twitter:')) {\n      twitterTags[name.replace('twitter:', '')] = content;\n    } else {\n      metaTags[name] = content;\n    }\n  }\n  if (prop) {\n    if (prop.startsWith('og:')) {\n      ogTags[prop.replace('og:', '')] = content;\n    } else if (prop.startsWith('twitter:')) {\n      twitterTags[prop.replace('twitter:', '')] = content;\n    }\n  }\n}\n\n// Canonical link\nconst canonicalMatch = rawHtml.match(/<link[^>]+rel=[\"']canonical[\"'][^>]+href=[\"']([^\"']+)[\"'][^>]*>/i);\nconst canonicalUrl = canonicalMatch ? canonicalMatch[1] : config.url;\n\n// 3. Extract Headings\nconst headings = [];\nconst headingRegex = /<(h[1-6])[^>]*>([\\s\\S]*?)<\\/\\1>/gi;\nlet hMatch;\nwhile ((hMatch = headingRegex.exec(rawHtml)) !== null) {\n  const level = parseInt(hMatch[1].substring(1), 10);\n  const text = hMatch[2].replace(/<[^>]+>/g, '').replace(/\\s+/g, ' ').trim();\n  if (text) {\n    headings.push({ level, text });\n  }\n}\n\n// 4. Extract Links\nconst links = [];\nconst linkRegex = /<a\\s+[^>]*href=[\"']([^\"'#][^\"']*)[\"'][^>]*>([\\s\\S]*?)<\\/a>/gi;\nlet aMatch;\nwhile ((aMatch = linkRegex.exec(rawHtml)) !== null) {\n  const href = aMatch[1].trim();\n  const text = aMatch[2].replace(/<[^>]+>/g, '').replace(/\\s+/g, ' ').trim();\n  if (!href.startsWith('javascript:') && !href.startsWith('mailto:') && !href.startsWith('tel:')) {\n    let resolvedHref = href;\n    // No global URL class in the Code-node sandbox: resolve relative links by hand.\n    if (/^https?:\\/\\//i.test(href)) {\n      resolvedHref = href;\n    } else if (href.startsWith('//')) {\n      resolvedHref = config.url.split('//')[0] + href;\n    } else if (href.startsWith('/')) {\n      resolvedHref = config.origin + href;\n    } else {\n      resolvedHref = config.url.split(/[?#]/)[0].replace(/[^\\/]*$/, '') + href;\n    }\n    const isInternal = resolvedHref.startsWith(config.origin);\n    links.push({ text: text || resolvedHref, href: resolvedHref, isInternal });\n  }\n}\n\n// 5. Clean HTML for content extraction\nlet cleanContent = rawHtml;\n// Remove scripts, styles, noscript, svg, iframes, nav, footer, header\ncleanContent = cleanContent.replace(/<script[\\s\\S]*?<\\/script>/gi, '');\ncleanContent = cleanContent.replace(/<style[\\s\\S]*?<\\/style>/gi, '');\ncleanContent = cleanContent.replace(/<noscript[\\s\\S]*?<\\/noscript>/gi, '');\ncleanContent = cleanContent.replace(/<svg[\\s\\S]*?<\\/svg>/gi, '');\ncleanContent = cleanContent.replace(/<iframe[\\s\\S]*?<\\/iframe>/gi, '');\ncleanContent = cleanContent.replace(/<nav[\\s\\S]*?<\\/nav>/gi, '');\ncleanContent = cleanContent.replace(/<footer[\\s\\S]*?<\\/footer>/gi, '');\ncleanContent = cleanContent.replace(/<header[\\s\\S]*?<\\/header>/gi, '');\ncleanContent = cleanContent.replace(/<!--[\\s\\S]*?-->/g, '');\n\n// Convert headings to Markdown\ncleanContent = cleanContent.replace(/<h1[^>]*>([\\s\\S]*?)<\\/h1>/gi, '\\n\\n# $1\\n\\n');\ncleanContent = cleanContent.replace(/<h2[^>]*>([\\s\\S]*?)<\\/h2>/gi, '\\n\\n## $1\\n\\n');\ncleanContent = cleanContent.replace(/<h3[^>]*>([\\s\\S]*?)<\\/h3>/gi, '\\n\\n### $1\\n\\n');\ncleanContent = cleanContent.replace(/<h[4-6][^>]*>([\\s\\S]*?)<\\/h[4-6]>/gi, '\\n\\n#### $1\\n\\n');\n\n// Convert lists & blockquotes\ncleanContent = cleanContent.replace(/<li[^>]*>([\\s\\S]*?)<\\/li>/gi, '\\n* $1');\ncleanContent = cleanContent.replace(/<blockquote[^>]*>([\\s\\S]*?)<\\/blockquote>/gi, '\\n> $1\\n');\ncleanContent = cleanContent.replace(/<p[^>]*>([\\s\\S]*?)<\\/p>/gi, '\\n\\n$1\\n\\n');\ncleanContent = cleanContent.replace(/<br\\s*\\/?>/gi, '\\n');\n\n// Strip remaining tags\nlet markdown = cleanContent.replace(/<[^>]+>/g, ' ');\nmarkdown = markdown.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '\"');\nmarkdown = markdown.split('\\n').map(l => l.trim()).filter(l => l.length > 0).join('\\n\\n');\n\n// Plain text\nconst plainText = markdown.replace(/#+\\s*/g, '').replace(/\\*\\s*/g, '').replace(/>\\s*/g, '');\nconst words = (plainText.match(/\\b\\w+\\b/g) || []);\nconst wordCount = words.length;\nconst readingTimeMinutes = Math.max(1, Math.round(wordCount / 200));\n\nconst internalLinks = links.filter(l => l.isInternal);\nconst externalLinks = links.filter(l => !l.isInternal);\n\nreturn [{\n  json: {\n    success: true,\n    url: config.url,\n    statusCode: statusCode,\n    title: title || ogTags.title || '',\n    metadata: {\n      description: metaTags.description || ogTags.description || '',\n      keywords: metaTags.keywords || '',\n      author: metaTags.author || '',\n      canonical: canonicalUrl,\n      openGraph: ogTags,\n      twitterCard: twitterTags\n    },\n    headings: headings,\n    links: {\n      total: links.length,\n      internalCount: internalLinks.length,\n      externalCount: externalLinks.length,\n      internal: internalLinks.slice(0, 50),\n      external: externalLinks.slice(0, 50)\n    },\n    statistics: {\n      wordCount: wordCount,\n      characterCount: plainText.length,\n      readingTimeMinutes: readingTimeMinutes\n    },\n    cleanMarkdown: markdown,\n    cleanText: plainText,\n    scrapedAt: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "a1b2c3d4-0005-4000-8000-000000000005",
+      "name": "Extract Content & Structure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        160,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "f_prompt",
+              "name": "llm_research_prompt",
+              "value": "=You are an expert research and content synthesis assistant. Below is the structured text extracted from the webpage \"{{ $json.title }}\" (URL: {{ $json.url }}):\n\n--- METADATA ---\nTitle: {{ $json.title }}\nDescription: {{ $json.metadata.description }}\nWord Count: {{ $json.statistics.wordCount }} (~{{ $json.statistics.readingTimeMinutes }} min read)\n\n--- CONTENT ---\n{{ $json.cleanMarkdown }}\n\n--- INSTRUCTIONS ---\n1. Summarize the main thesis and core insights.\n2. Extract any key actionable recommendations or data points.\n3. Identify any mentioned entities, products, or technologies.",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0006-4000-8000-000000000006",
+      "name": "Prepare AI / LLM Context",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        420,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json; charset=utf-8"
+              }
+            ]
+          }
+        }
+      },
+      "id": "a1b2c3d4-0007-4000-8000-000000000007",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        680,
+        240
+      ]
+    }
+  ],
+  "connections": {
+    "When clicking 'Test workflow'": {
+      "main": [
+        [
+          {
+            "node": "Parse Input & Configure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Parse Input & Configure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Input & Configure": {
+      "main": [
+        [
+          {
+            "node": "Fetch Website HTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Website HTML": {
+      "main": [
+        [
+          {
+            "node": "Extract Content & Structure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Content & Structure": {
+      "main": [
+        [
+          {
+            "node": "Prepare AI / LLM Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare AI / LLM Context": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
